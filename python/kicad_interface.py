@@ -276,6 +276,7 @@ class KiCADInterface:
             "update_symbol_property": self._handle_update_symbol_property,
             "add_schematic_component": self._handle_add_schematic_component,
             "add_schematic_wire": self._handle_add_schematic_wire,
+            "add_schematic_label": self._handle_add_schematic_label,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
 
@@ -590,12 +591,53 @@ class KiCADInterface:
             traceback.print_exc()
             return {"success": False, "message": str(e)}
     
+    def _handle_add_schematic_label(self, params):
+        """Add a label to a schematic"""
+        logger.info("Adding label to schematic")
+        try:
+            # Support both naming conventions
+            schematic_path = params.get("file_path") or params.get("schematicPath")
+            text = params.get("text")
+            x = params.get("x")
+            y = params.get("y")
+            label_type = params.get("label_type", "label")  # default to "label"
+
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+            if not text:
+                return {"success": False, "message": "Label text is required"}
+            if x is None or y is None:
+                return {"success": False, "message": "X and Y coordinates are required"}
+
+            logger.debug(f"Will read {schematic_path}")
+            schematic = Schematic(schematic_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            label = ConnectionManager.add_label(schematic, text, x, y, label_type)
+            success = label is not None
+
+            if success:
+                # Save using tree-based save (same as component addition)
+                if ComponentManager.save_schematic_with_tree(schematic, schematic_path):
+                    logger.info(f"Saved label to {schematic_path}")
+                    return {"success": True, "message": f"Added {label_type} '{text}' at ({x}, {y})", "file_path": schematic_path}
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
+            else:
+                return {"success": False, "message": "Failed to add label"}
+        except Exception as e:
+            logger.error(f"Error adding label to schematic: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
     def _handle_list_schematic_libraries(self, params):
         """List available symbol libraries"""
         logger.info("Listing schematic libraries")
         try:
             search_paths = params.get("searchPaths")
-            
+
             libraries = LibraryManager.list_available_libraries(search_paths)
             return {"success": True, "libraries": libraries}
         except Exception as e:

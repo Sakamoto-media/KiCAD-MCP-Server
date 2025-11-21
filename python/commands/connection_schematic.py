@@ -63,6 +63,65 @@ class ConnectionManager:
             return None
 
     @staticmethod
+    def add_label(schematic: Schematic, text: str, x: float, y: float, label_type: str = "label"):
+        """Add a label/net label to the schematic
+
+        Args:
+            schematic: Schematic object
+            text: Label text (e.g., "VCC", "GND", "Net_01")
+            x: X coordinate
+            y: Y coordinate
+            label_type: Type of label ("label", "global_label", "hierarchical_label")
+
+        Returns:
+            Label S-expression if successful, None otherwise
+        """
+        try:
+            label_uuid = str(uuid.uuid4())
+
+            # Create label S-expression
+            # Format: (label "text" (at x y rotation) (effects ...) (uuid "..."))
+            label_expr = [
+                sexpdata.Symbol(label_type),
+                text,
+                [sexpdata.Symbol('at'), x, y, 0],
+                [
+                    sexpdata.Symbol('fields_autoplaced'), sexpdata.Symbol('yes')
+                ],
+                [
+                    sexpdata.Symbol('effects'),
+                    [
+                        sexpdata.Symbol('font'),
+                        [sexpdata.Symbol('size'), 1.27, 1.27]
+                    ],
+                    [sexpdata.Symbol('justify'), sexpdata.Symbol('left'), sexpdata.Symbol('bottom')]
+                ],
+                [sexpdata.Symbol('uuid'), label_uuid]
+            ]
+
+            # Find position to insert (before sheet_instances)
+            if hasattr(schematic, 'tree') and isinstance(schematic.tree, list):
+                insert_pos = len(schematic.tree)
+                for i, item in enumerate(schematic.tree):
+                    if isinstance(item, list) and len(item) > 0:
+                        if hasattr(item[0], 'value') and item[0].value() == 'sheet_instances':
+                            insert_pos = i
+                            break
+
+                schematic.tree.insert(insert_pos, label_expr)
+                print(f"Added {label_type} '{text}' at ({x}, {y})")
+                return label_expr
+            else:
+                print("Error: Schematic tree not accessible")
+                return None
+
+        except Exception as e:
+            print(f"Error adding label: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    @staticmethod
     def add_connection(schematic: Schematic, source_ref: str, source_pin: str, target_ref: str, target_pin: str):
         """Add a connection between component pins"""
         # kicad-skip handles connections implicitly through wires and labels.
