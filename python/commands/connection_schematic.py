@@ -1,21 +1,65 @@
 from skip import Schematic
 # Wire and Net classes might not be directly importable in the current version
 import os
+import sexpdata
+import uuid
 
 class ConnectionManager:
     """Manage connections between components"""
 
     @staticmethod
     def add_wire(schematic: Schematic, start_point: list, end_point: list, properties: dict = None):
-        """Add a wire between two points"""
+        """Add a wire between two points using S-expression
+
+        Args:
+            schematic: Schematic object
+            start_point: [x, y] coordinates for start point
+            end_point: [x, y] coordinates for end point
+            properties: Optional properties dict (stroke, uuid, etc.)
+
+        Returns:
+            Wire S-expression if successful, None otherwise
+        """
         try:
-            wire = schematic.add_wire(start=start_point, end=end_point)
-            # kicad-skip wire properties are limited, but we can potentially
-            # add graphical properties if needed in the future.
-            print(f"Added wire from {start_point} to {end_point}.")
-            return wire
+            # Create wire S-expression
+            # Format: (wire (pts (xy x1 y1) (xy x2 y2)) (stroke (width 0) (type default)) (uuid "..."))
+            wire_uuid = str(uuid.uuid4())
+
+            wire_expr = [
+                sexpdata.Symbol('wire'),
+                [
+                    sexpdata.Symbol('pts'),
+                    [sexpdata.Symbol('xy'), start_point[0], start_point[1]],
+                    [sexpdata.Symbol('xy'), end_point[0], end_point[1]]
+                ],
+                [
+                    sexpdata.Symbol('stroke'),
+                    [sexpdata.Symbol('width'), 0],
+                    [sexpdata.Symbol('type'), sexpdata.Symbol('default')]
+                ],
+                [sexpdata.Symbol('uuid'), wire_uuid]
+            ]
+
+            # Find position to insert (before sheet_instances)
+            if hasattr(schematic, 'tree') and isinstance(schematic.tree, list):
+                insert_pos = len(schematic.tree)
+                for i, item in enumerate(schematic.tree):
+                    if isinstance(item, list) and len(item) > 0:
+                        if hasattr(item[0], 'value') and item[0].value() == 'sheet_instances':
+                            insert_pos = i
+                            break
+
+                schematic.tree.insert(insert_pos, wire_expr)
+                print(f"Added wire from {start_point} to {end_point} (UUID: {wire_uuid})")
+                return wire_expr
+            else:
+                print("Error: Schematic tree not accessible")
+                return None
+
         except Exception as e:
             print(f"Error adding wire: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     @staticmethod

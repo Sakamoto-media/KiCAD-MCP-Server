@@ -170,6 +170,7 @@ try:
     from commands.connection_schematic import ConnectionManager
     from commands.library_schematic import LibraryManager as SchematicLibraryManager
     from commands.library import LibraryManager as FootprintLibraryManager, LibraryCommands
+    from skip import Schematic  # Import Schematic class for wire operations
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -508,7 +509,7 @@ class KiCADInterface:
             if success:
                 # Save the schematic
                 save_path = output_path if output_path else file_path
-                save_success = SchematicManager.save_schematic(schematic, save_path)
+                save_success = ComponentManager.save_schematic_with_tree(schematic, save_path)
 
                 if save_success:
                     return {
@@ -556,29 +557,37 @@ class KiCADInterface:
         """Add a wire to a schematic"""
         logger.info("Adding wire to schematic")
         try:
-            schematic_path = params.get("schematicPath")
-            start_point = params.get("startPoint")
-            end_point = params.get("endPoint")
-            
+            # Support both naming conventions
+            schematic_path = params.get("file_path") or params.get("schematicPath")
+            start_point = params.get("start_point") or params.get("startPoint")
+            end_point = params.get("end_point") or params.get("endPoint")
+
             if not schematic_path:
                 return {"success": False, "message": "Schematic path is required"}
             if not start_point or not end_point:
                 return {"success": False, "message": "Start and end points are required"}
-            
-            schematic = SchematicManager.load_schematic(schematic_path)
+
+            logger.debug(f"Will read {schematic_path}")
+            schematic = Schematic(schematic_path)
             if not schematic:
                 return {"success": False, "message": "Failed to load schematic"}
-            
+
             wire = ConnectionManager.add_wire(schematic, start_point, end_point)
             success = wire is not None
-            
+
             if success:
-                SchematicManager.save_schematic(schematic, schematic_path)
-                return {"success": True}
+                # Save using tree-based save (same as component addition)
+                if ComponentManager.save_schematic_with_tree(schematic, schematic_path):
+                    logger.info(f"Saved wire to {schematic_path}")
+                    return {"success": True, "message": f"Added wire from {start_point} to {end_point}", "file_path": schematic_path}
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
             else:
                 return {"success": False, "message": "Failed to add wire"}
         except Exception as e:
             logger.error(f"Error adding wire to schematic: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "message": str(e)}
     
     def _handle_list_schematic_libraries(self, params):
@@ -662,9 +671,9 @@ class KiCADInterface:
             )
 
             if success:
-                # Save schematic
+                # Save schematic using tree-based save
                 save_path = output_path if output_path else file_path
-                save_success = SchematicManager.save_schematic(schematic, save_path)
+                save_success = ComponentManager.save_schematic_with_tree(schematic, save_path)
 
                 if save_success:
                     return {
@@ -730,7 +739,7 @@ class KiCADInterface:
 
                 # Save schematic
                 save_path = output_path if output_path else file_path
-                save_success = SchematicManager.save_schematic(schematic, save_path)
+                save_success = ComponentManager.save_schematic_with_tree(schematic, save_path)
 
                 if save_success:
                     return {
@@ -798,7 +807,7 @@ class KiCADInterface:
 
                 # Save schematic
                 save_path = output_path if output_path else file_path
-                save_success = SchematicManager.save_schematic(schematic, save_path)
+                save_success = ComponentManager.save_schematic_with_tree(schematic, save_path)
 
                 if save_success:
                     return {
@@ -851,9 +860,9 @@ class KiCADInterface:
             )
 
             if success:
-                # Save schematic
+                # Save schematic using tree-based save
                 save_path = output_path if output_path else file_path
-                save_success = SchematicManager.save_schematic(schematic, save_path)
+                save_success = ComponentManager.save_schematic_with_tree(schematic, save_path)
 
                 if save_success:
                     return {
