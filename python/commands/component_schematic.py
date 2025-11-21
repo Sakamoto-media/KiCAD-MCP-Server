@@ -7,6 +7,115 @@ import sexpdata
 class ComponentManager:
     """Manage components in a schematic"""
 
+    # KiCAD symbol library paths
+    KICAD_SYMBOL_LIB_PATH = "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols"
+
+    @staticmethod
+    def _load_symbol_from_library(lib_id: str):
+        """Load symbol definition from KiCAD library
+
+        Args:
+            lib_id: Library ID in format "Library:Symbol" (e.g., "Device:C")
+
+        Returns:
+            S-expression list for the symbol definition, or None if not found
+        """
+        try:
+            # Parse lib_id
+            if ':' not in lib_id:
+                print(f"Invalid lib_id format: {lib_id}")
+                return None
+
+            library_name, symbol_name = lib_id.split(':', 1)
+            lib_file = os.path.join(ComponentManager.KICAD_SYMBOL_LIB_PATH, f"{library_name}.kicad_sym")
+
+            if not os.path.exists(lib_file):
+                print(f"Library file not found: {lib_file}")
+                return None
+
+            # Read and parse library file
+            with open(lib_file, 'r', encoding='utf-8') as f:
+                lib_content = f.read()
+
+            # Parse S-expression
+            lib_sexpr = sexpdata.loads(lib_content)
+
+            # Find the symbol definition
+            # Library structure: (kicad_symbol_lib ... (symbol "SymbolName" ...) ...)
+            if not isinstance(lib_sexpr, list):
+                return None
+
+            for item in lib_sexpr:
+                if isinstance(item, list) and len(item) > 0:
+                    if hasattr(item[0], 'value') and item[0].value() == 'symbol':
+                        # Check if this is the symbol we're looking for
+                        if len(item) > 1 and item[1] == symbol_name:
+                            # Found it! Return the symbol definition
+                            # Need to prepend it with the lib_id for the schematic
+                            symbol_def = [sexpdata.Symbol('symbol'), lib_id] + item[2:]
+                            print(f"Loaded symbol definition for {lib_id}")
+                            return symbol_def
+
+            print(f"Symbol {symbol_name} not found in library {library_name}")
+            return None
+
+        except Exception as e:
+            print(f"Error loading symbol from library: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    @staticmethod
+    def _ensure_symbol_in_lib_symbols(schematic: Schematic, lib_id: str):
+        """Ensure symbol definition exists in lib_symbols section
+
+        Args:
+            schematic: Schematic object
+            lib_id: Library ID (e.g., "Device:C")
+
+        Returns:
+            bool: True if symbol definition exists or was added, False on error
+        """
+        try:
+            # Check if lib_symbols section exists and if symbol is already there
+            lib_symbols_index = None
+            lib_symbols_list = None
+
+            for i, item in enumerate(schematic.tree):
+                if isinstance(item, list) and len(item) > 0:
+                    if hasattr(item[0], 'value') and item[0].value() == 'lib_symbols':
+                        lib_symbols_index = i
+                        lib_symbols_list = item
+                        break
+
+            if lib_symbols_list is None:
+                print("lib_symbols section not found in schematic")
+                return False
+
+            # Check if symbol already exists
+            for item in lib_symbols_list[1:]:  # Skip 'lib_symbols' symbol itself
+                if isinstance(item, list) and len(item) > 1:
+                    if hasattr(item[0], 'value') and item[0].value() == 'symbol':
+                        if item[1] == lib_id:
+                            print(f"Symbol {lib_id} already in lib_symbols")
+                            return True
+
+            # Symbol not found, load from library
+            symbol_def = ComponentManager._load_symbol_from_library(lib_id)
+            if symbol_def is None:
+                return False
+
+            # Add to lib_symbols section
+            lib_symbols_list.append(symbol_def)
+            print(f"Added {lib_id} to lib_symbols section")
+            return True
+
+        except Exception as e:
+            print(f"Error ensuring symbol in lib_symbols: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     @staticmethod
     def _get_project_uuid(schematic: Schematic):
         """Extract project UUID from schematic"""
@@ -331,21 +440,58 @@ class ComponentManager:
         return list(schematic.symbol)
 
     @staticmethod
+    def save_schematic_with_tree(schematic: Schematic, file_path: str):
+        """Save schematic by writing tree directly to file (bypass kicad-skip write)"""
+        try:
+            # schematic.tree already contains all elements INCLUDING the root 'kicad_sch' symbol
+            # We need to wrap it: (kicad_sch version generator ... symbols ...)
+            # tree[0] is 'kicad_sch' symbol, tree[1:] are the actual content elements
+
+            # Build the complete S-expression: (kicad_sch <all elements except tree[0]>)
+            kicad_sch_expr = [sexpdata.Symbol('kicad_sch')] + schematic.tree[1:]
+
+            # Convert to S-expression string with pretty printing
+            sexpr_str = sexpdata.dumps(kicad_sch_expr, pretty_print=True, indent_as='\t')
+
+            # Write to file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(sexpr_str)
+
+            print(f"Saved schematic with tree to: {file_path}")
+            return True
+        except Exception as e:
+            print(f"Error saving schematic with tree: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    @staticmethod
     def add_component_sexpr(schematic: Schematic, lib_id: str, reference: str, value: str,
                            x: float, y: float, rotation: int = 0, footprint: str = "",
                            datasheet: str = ""):
         """Add a component using S-expression at exact coordinates (Method 1)"""
         try:
-            # Create symbol S-expression
+            # Step 1: Ensure symbol definition is in lib_symbols
+            if not ComponentManager._ensure_symbol_in_lib_symbols(schematic, lib_id):
+                print(f"Warning: Could not add {lib_id} to lib_symbols, but continuing...")
+
+            # Step 2: Create symbol instance S-expression
             symbol_expr = ComponentManager.create_symbol_sexpr(
                 schematic, lib_id, reference, value, x, y, rotation,
                 footprint=footprint, datasheet=datasheet
             )
 
-            # Append to schematic tree
+            # Step 3: Find position to insert (before sheet_instances)
             if hasattr(schematic, 'tree') and isinstance(schematic.tree, list):
-                schematic.tree.append(symbol_expr)
-                print(f"Added component {reference} ({lib_id}) at ({x}, {y})")
+                insert_pos = len(schematic.tree)
+                for i, item in enumerate(schematic.tree):
+                    if isinstance(item, list) and len(item) > 0:
+                        if hasattr(item[0], 'value') and item[0].value() == 'sheet_instances':
+                            insert_pos = i
+                            break
+
+                schematic.tree.insert(insert_pos, symbol_expr)
+                print(f"Added component {reference} ({lib_id}) at ({x}, {y}) to tree at position {insert_pos}")
                 return True
             else:
                 print("Error: Schematic tree not accessible")
