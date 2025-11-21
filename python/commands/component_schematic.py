@@ -1,9 +1,207 @@
 from skip import Schematic
 # Symbol class might not be directly importable in the current version
 import os
+import uuid
+import sexpdata
 
 class ComponentManager:
     """Manage components in a schematic"""
+
+    @staticmethod
+    def _get_project_uuid(schematic: Schematic):
+        """Extract project UUID from schematic"""
+        try:
+            # Look for project UUID in existing instances
+            if hasattr(schematic, 'symbol') and len(schematic.symbol) > 0:
+                first_symbol = schematic.symbol[0]
+                if hasattr(first_symbol, 'instances'):
+                    # Parse instances to get project path UUID
+                    instances_str = str(first_symbol.instances)
+                    # Extract UUID from path
+                    import re
+                    match = re.search(r'/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', instances_str)
+                    if match:
+                        return match.group(1)
+            # Fallback: parse from tree directly
+            if hasattr(schematic, 'tree') and isinstance(schematic.tree, list):
+                for item in schematic.tree:
+                    if isinstance(item, list) and len(item) > 0:
+                        if hasattr(item[0], 'value') and item[0].value() == 'symbol':
+                            # Search for instances in symbol
+                            for subitem in item:
+                                if isinstance(subitem, list) and len(subitem) > 0:
+                                    if hasattr(subitem[0], 'value') and subitem[0].value() == 'instances':
+                                        # Found instances, extract UUID
+                                        instances_str = str(subitem)
+                                        import re
+                                        match = re.search(r'/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', instances_str)
+                                        if match:
+                                            return match.group(1)
+        except Exception as e:
+            print(f"Warning: Could not extract project UUID: {e}")
+        # Return a new UUID if we can't find one
+        return str(uuid.uuid4())
+
+    @staticmethod
+    def _create_property_sexpr(name: str, value: str, at_x: float, at_y: float, at_rot: int = 0,
+                               hide: bool = False, justify: str = None):
+        """Create a property S-expression"""
+        effects_parts = [
+            [sexpdata.Symbol('font'),
+             [sexpdata.Symbol('size'), 1.27, 1.27]]
+        ]
+
+        if justify:
+            effects_parts.append([sexpdata.Symbol('justify'), sexpdata.Symbol(justify)])
+
+        if hide:
+            effects_parts.append([sexpdata.Symbol('hide'), sexpdata.Symbol('yes')])
+
+        property_expr = [
+            sexpdata.Symbol('property'),
+            name,
+            value,
+            [sexpdata.Symbol('at'), at_x, at_y, at_rot],
+            [sexpdata.Symbol('effects')] + effects_parts
+        ]
+
+        return property_expr
+
+    @staticmethod
+    def _get_library_symbol_pins(schematic: Schematic, lib_id: str):
+        """Get pin information from library symbol definition"""
+        try:
+            # Try to find the library symbol definition in the schematic tree
+            # KiCAD schematics include library symbol definitions
+            if hasattr(schematic, 'tree') and isinstance(schematic.tree, list):
+                for item in schematic.tree:
+                    if isinstance(item, list) and len(item) > 0:
+                        if hasattr(item[0], 'value') and item[0].value() == 'lib_symbols':
+                            # Found lib_symbols section
+                            for lib_symbol in item[1:]:
+                                if isinstance(lib_symbol, list) and len(lib_symbol) > 1:
+                                    if hasattr(lib_symbol[0], 'value') and lib_symbol[0].value() == 'symbol':
+                                        # Check if this is the symbol we're looking for
+                                        for prop in lib_symbol[1:]:
+                                            if isinstance(prop, str) and prop == lib_id:
+                                                # Found the library symbol, extract pins
+                                                pins = []
+                                                # Recursively search for pin definitions
+                                                def extract_pins(node, depth=0):
+                                                    if depth > 10:  # Prevent infinite recursion
+                                                        return
+                                                    if isinstance(node, list):
+                                                        for subnode in node:
+                                                            if isinstance(subnode, list) and len(subnode) > 1:
+                                                                if hasattr(subnode[0], 'value') and subnode[0].value() == 'pin':
+                                                                    # Found a pin, extract number
+                                                                    for pin_prop in subnode[1:]:
+                                                                        if isinstance(pin_prop, str):
+                                                                            pins.append(pin_prop)
+                                                                            break
+                                                            extract_pins(subnode, depth + 1)
+
+                                                extract_pins(lib_symbol)
+                                                if pins:
+                                                    return pins
+
+            # If we couldn't find pins, return empty list
+            # The symbol might not have the library definition in the schematic yet
+            return []
+        except Exception as e:
+            print(f"Warning: Could not extract pins from library symbol: {e}")
+            return []
+
+    @staticmethod
+    def _create_pin_sexprs(pin_numbers: list):
+        """Create pin S-expressions with UUIDs"""
+        pin_exprs = []
+        for pin_num in pin_numbers:
+            pin_uuid = str(uuid.uuid4())
+            pin_expr = [
+                sexpdata.Symbol('pin'),
+                str(pin_num),
+                [sexpdata.Symbol('uuid'), pin_uuid]
+            ]
+            pin_exprs.append(pin_expr)
+        return pin_exprs
+
+    @staticmethod
+    def _create_instances_sexpr(project_uuid: str, reference: str, unit: int = 1):
+        """Create instances S-expression"""
+        instances_expr = [
+            sexpdata.Symbol('instances'),
+            [
+                sexpdata.Symbol('project'),
+                "",
+                [
+                    sexpdata.Symbol('path'),
+                    f"/{project_uuid}",
+                    [sexpdata.Symbol('reference'), reference],
+                    [sexpdata.Symbol('unit'), unit]
+                ]
+            ]
+        ]
+        return instances_expr
+
+    @staticmethod
+    def create_symbol_sexpr(schematic: Schematic, lib_id: str, reference: str, value: str,
+                           x: float, y: float, rotation: int = 0, unit: int = 1,
+                           footprint: str = "", datasheet: str = "",
+                           exclude_from_sim: bool = False, in_bom: bool = True,
+                           on_board: bool = True, dnp: bool = False,
+                           fields_autoplaced: bool = True):
+        """Create a complete symbol S-expression"""
+
+        # Generate UUIDs
+        symbol_uuid = str(uuid.uuid4())
+        project_uuid = ComponentManager._get_project_uuid(schematic)
+
+        # Get pins from library (if available)
+        pins = ComponentManager._get_library_symbol_pins(schematic, lib_id)
+
+        # Create properties
+        # Reference and Value are visible and positioned above the symbol
+        ref_offset_y = -5.08  # About 0.2 inches above
+        val_offset_y = -2.54  # About 0.1 inches above
+
+        properties = [
+            ComponentManager._create_property_sexpr("Reference", reference, x, y + ref_offset_y, 0, hide=False),
+            ComponentManager._create_property_sexpr("Value", value, x, y + val_offset_y, 0, hide=False),
+            ComponentManager._create_property_sexpr("Footprint", footprint, x, y, 0, hide=True, justify="bottom" if footprint else None),
+            ComponentManager._create_property_sexpr("Datasheet", datasheet if datasheet else "~", x, y, 0, hide=True),
+        ]
+
+        # Create pin expressions
+        pin_exprs = ComponentManager._create_pin_sexprs(pins)
+
+        # Create instances
+        instances_expr = ComponentManager._create_instances_sexpr(project_uuid, reference, unit)
+
+        # Build complete symbol expression
+        symbol_expr = [
+            sexpdata.Symbol('symbol'),
+            [sexpdata.Symbol('lib_id'), lib_id],
+            [sexpdata.Symbol('at'), x, y, rotation],
+            [sexpdata.Symbol('unit'), unit],
+            [sexpdata.Symbol('exclude_from_sim'), sexpdata.Symbol('yes' if exclude_from_sim else 'no')],
+            [sexpdata.Symbol('in_bom'), sexpdata.Symbol('yes' if in_bom else 'no')],
+            [sexpdata.Symbol('on_board'), sexpdata.Symbol('yes' if on_board else 'no')],
+            [sexpdata.Symbol('dnp'), sexpdata.Symbol('yes' if dnp else 'no')],
+            [sexpdata.Symbol('fields_autoplaced'), sexpdata.Symbol('yes' if fields_autoplaced else 'no')],
+            [sexpdata.Symbol('uuid'), symbol_uuid]
+        ]
+
+        # Add properties
+        symbol_expr.extend(properties)
+
+        # Add pins
+        symbol_expr.extend(pin_exprs)
+
+        # Add instances
+        symbol_expr.append(instances_expr)
+
+        return symbol_expr
 
     @staticmethod
     def add_component(schematic: Schematic, component_def: dict):
@@ -131,6 +329,167 @@ class ComponentManager:
         """Get all components in schematic"""
         print(f"Retrieving all {len(schematic.symbol)} components.")
         return list(schematic.symbol)
+
+    @staticmethod
+    def add_component_sexpr(schematic: Schematic, lib_id: str, reference: str, value: str,
+                           x: float, y: float, rotation: int = 0, footprint: str = "",
+                           datasheet: str = ""):
+        """Add a component using S-expression at exact coordinates (Method 1)"""
+        try:
+            # Create symbol S-expression
+            symbol_expr = ComponentManager.create_symbol_sexpr(
+                schematic, lib_id, reference, value, x, y, rotation,
+                footprint=footprint, datasheet=datasheet
+            )
+
+            # Append to schematic tree
+            if hasattr(schematic, 'tree') and isinstance(schematic.tree, list):
+                schematic.tree.append(symbol_expr)
+                print(f"Added component {reference} ({lib_id}) at ({x}, {y})")
+                return True
+            else:
+                print("Error: Schematic tree not accessible")
+                return False
+        except Exception as e:
+            print(f"Error adding component {reference}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    @staticmethod
+    def get_next_grid_position(schematic: Schematic, grid_x: int = 0, grid_y: int = 0, grid_size: float = 50.8):
+        """Calculate next available grid position (Method 2 helper)"""
+        # Get occupied positions
+        occupied = set()
+        for symbol in schematic.symbol:
+            try:
+                sx, sy = symbol.at[0], symbol.at[1]
+                grid_sx = round(sx / grid_size)
+                grid_sy = round(sy / grid_size)
+                occupied.add((grid_sx, grid_sy))
+            except:
+                continue
+
+        # Find next available position starting from grid_x, grid_y
+        for row in range(grid_y, grid_y + 20):
+            for col in range(grid_x, grid_x + 20):
+                if (col, row) not in occupied:
+                    return (col * grid_size, row * grid_size)
+
+        # Fallback to original position if all occupied (unlikely)
+        return (grid_x * grid_size, grid_y * grid_size)
+
+    @staticmethod
+    def add_component_auto(schematic: Schematic, lib_id: str, reference: str, value: str,
+                          grid_x: int = 0, grid_y: int = 0, grid_size: float = 50.8,
+                          rotation: int = 0, footprint: str = "", datasheet: str = ""):
+        """Add a component with automatic grid-based positioning (Method 2)"""
+        try:
+            # Calculate position
+            x, y = ComponentManager.get_next_grid_position(schematic, grid_x, grid_y, grid_size)
+
+            # Add component at calculated position
+            return ComponentManager.add_component_sexpr(
+                schematic, lib_id, reference, value, x, y, rotation, footprint, datasheet
+            )
+        except Exception as e:
+            print(f"Error adding component {reference} with auto positioning: {e}")
+            return False
+
+    @staticmethod
+    def calculate_relative_position(schematic: Schematic, anchor_ref: str,
+                                   direction: str = "right", distance: float = 25.4):
+        """Calculate position relative to another component (Method 3 helper)"""
+        # Find anchor component
+        anchor_symbol = ComponentManager.get_component(schematic, anchor_ref)
+        if not anchor_symbol:
+            print(f"Anchor component {anchor_ref} not found")
+            return None
+
+        # Get anchor position
+        try:
+            anchor_x = anchor_symbol.at[0]
+            anchor_y = anchor_symbol.at[1]
+        except:
+            print(f"Could not get position of anchor component {anchor_ref}")
+            return None
+
+        # Calculate offset based on direction
+        offsets = {
+            'right': (distance, 0),
+            'left': (-distance, 0),
+            'below': (0, distance),
+            'above': (0, -distance),
+            'below-right': (distance, distance),
+            'below-left': (-distance, distance),
+            'above-right': (distance, -distance),
+            'above-left': (-distance, -distance)
+        }
+
+        dx, dy = offsets.get(direction, (distance, 0))
+        return (anchor_x + dx, anchor_y + dy)
+
+    @staticmethod
+    def add_component_relative(schematic: Schematic, lib_id: str, reference: str, value: str,
+                              anchor_ref: str, direction: str = "right", distance: float = 25.4,
+                              rotation: int = 0, footprint: str = "", datasheet: str = ""):
+        """Add a component relative to another component (Method 3)"""
+        try:
+            # Calculate position
+            position = ComponentManager.calculate_relative_position(schematic, anchor_ref, direction, distance)
+            if position is None:
+                return False
+
+            x, y = position
+
+            # Add component at calculated position
+            return ComponentManager.add_component_sexpr(
+                schematic, lib_id, reference, value, x, y, rotation, footprint, datasheet
+            )
+        except Exception as e:
+            print(f"Error adding component {reference} relative to {anchor_ref}: {e}")
+            return False
+
+    @staticmethod
+    def add_component_group(schematic: Schematic, components: list, start_x: float = 100,
+                          start_y: float = 100, spacing: float = 25.4, columns: int = 5):
+        """Add multiple components in a group layout (Method 4)
+
+        Args:
+            components: List of dicts with keys: lib_id, reference, value, footprint (optional), datasheet (optional)
+            start_x: Starting X coordinate
+            start_y: Starting Y coordinate
+            spacing: Distance between components
+            columns: Number of columns before wrapping to next row
+        """
+        try:
+            added_count = 0
+            for i, comp in enumerate(components):
+                # Calculate position in grid
+                col = i % columns
+                row = i // columns
+                x = start_x + col * spacing
+                y = start_y + row * spacing
+
+                # Add component
+                success = ComponentManager.add_component_sexpr(
+                    schematic,
+                    comp.get('lib_id'),
+                    comp.get('reference'),
+                    comp.get('value'),
+                    x, y, 0,
+                    comp.get('footprint', ''),
+                    comp.get('datasheet', '')
+                )
+
+                if success:
+                    added_count += 1
+
+            print(f"Added {added_count}/{len(components)} components in group")
+            return added_count == len(components)
+        except Exception as e:
+            print(f"Error adding component group: {e}")
+            return False
 
 if __name__ == '__main__':
     # Example Usage (for testing)

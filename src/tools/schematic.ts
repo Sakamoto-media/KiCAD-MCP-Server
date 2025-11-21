@@ -150,4 +150,119 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
       };
     }
   );
+
+  // Add symbol with exact coordinates (Method 1)
+  server.tool(
+    "add_symbol",
+    "Add a symbol/component at exact coordinates using S-expression",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      lib_id: z.string().describe("Library ID in format Library:Component (e.g., Device:R, Device:C)"),
+      reference: z.string().describe("Component reference (e.g., R1, C1, U1)"),
+      value: z.string().describe("Component value (e.g., 10k, 100nF)"),
+      x: z.number().describe("X coordinate in mm"),
+      y: z.number().describe("Y coordinate in mm"),
+      rotation: z.number().optional().describe("Rotation angle in degrees (default: 0)"),
+      footprint: z.string().optional().describe("Footprint library ID (e.g., Resistor_SMD:R_0603_1608Metric)"),
+      datasheet: z.string().optional().describe("Datasheet URL or path"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; lib_id: string; reference: string; value: string; x: number; y: number; rotation?: number; footprint?: string; datasheet?: string; output_path?: string }) => {
+      const result = await callKicadScript("add_symbol", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Add symbol with automatic grid positioning (Method 2)
+  server.tool(
+    "add_symbol_auto",
+    "Add a symbol/component with automatic grid-based positioning to avoid collisions",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      lib_id: z.string().describe("Library ID in format Library:Component (e.g., Device:R, Device:C)"),
+      reference: z.string().describe("Component reference (e.g., R1, C1, U1)"),
+      value: z.string().describe("Component value (e.g., 10k, 100nF)"),
+      grid_x: z.number().optional().describe("Starting grid X position (default: 0)"),
+      grid_y: z.number().optional().describe("Starting grid Y position (default: 0)"),
+      grid_size: z.number().optional().describe("Grid size in mm (default: 50.8 = 2 inches)"),
+      rotation: z.number().optional().describe("Rotation angle in degrees (default: 0)"),
+      footprint: z.string().optional().describe("Footprint library ID"),
+      datasheet: z.string().optional().describe("Datasheet URL or path"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; lib_id: string; reference: string; value: string; grid_x?: number; grid_y?: number; grid_size?: number; rotation?: number; footprint?: string; datasheet?: string; output_path?: string }) => {
+      const result = await callKicadScript("add_symbol_auto", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Add symbol relative to another component (Method 3)
+  server.tool(
+    "add_symbol_relative",
+    "Add a symbol/component positioned relative to an existing component",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      lib_id: z.string().describe("Library ID in format Library:Component (e.g., Device:R, Device:C)"),
+      reference: z.string().describe("Component reference (e.g., R1, C1, U1)"),
+      value: z.string().describe("Component value (e.g., 10k, 100nF)"),
+      anchor_ref: z.string().describe("Reference of the anchor component to position relative to"),
+      direction: z.string().optional().describe("Direction from anchor: right, left, below, above, below-right, below-left, above-right, above-left (default: right)"),
+      distance: z.number().optional().describe("Distance from anchor in mm (default: 25.4 = 1 inch)"),
+      rotation: z.number().optional().describe("Rotation angle in degrees (default: 0)"),
+      footprint: z.string().optional().describe("Footprint library ID"),
+      datasheet: z.string().optional().describe("Datasheet URL or path"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; lib_id: string; reference: string; value: string; anchor_ref: string; direction?: string; distance?: number; rotation?: number; footprint?: string; datasheet?: string; output_path?: string }) => {
+      const result = await callKicadScript("add_symbol_relative", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Add multiple symbols in a group layout (Method 4)
+  server.tool(
+    "add_symbol_group",
+    "Add multiple symbols/components in a grid layout at once",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      components: z.array(
+        z.object({
+          lib_id: z.string().describe("Library ID (e.g., Device:R)"),
+          reference: z.string().describe("Component reference (e.g., R1)"),
+          value: z.string().describe("Component value (e.g., 10k)"),
+          footprint: z.string().optional().describe("Footprint library ID"),
+          datasheet: z.string().optional().describe("Datasheet URL or path"),
+        })
+      ).describe("Array of components to add"),
+      start_x: z.number().optional().describe("Starting X coordinate in mm (default: 100)"),
+      start_y: z.number().optional().describe("Starting Y coordinate in mm (default: 100)"),
+      spacing: z.number().optional().describe("Spacing between components in mm (default: 25.4 = 1 inch)"),
+      columns: z.number().optional().describe("Number of columns before wrapping to next row (default: 5)"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; components: Array<{lib_id: string; reference: string; value: string; footprint?: string; datasheet?: string}>; start_x?: number; start_y?: number; spacing?: number; columns?: number; output_path?: string }) => {
+      const result = await callKicadScript("add_symbol_group", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
 }

@@ -278,6 +278,12 @@ class KiCADInterface:
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
 
+            # Symbol addition commands (S-expression based)
+            "add_symbol": self._handle_add_symbol,
+            "add_symbol_auto": self._handle_add_symbol_auto,
+            "add_symbol_relative": self._handle_add_symbol_relative,
+            "add_symbol_group": self._handle_add_symbol_group,
+
             # UI/Process management commands
             "check_kicad_ui": self._handle_check_kicad_ui,
             "launch_kicad_ui": self._handle_launch_kicad_ui
@@ -593,25 +599,278 @@ class KiCADInterface:
         try:
             schematic_path = params.get("schematicPath")
             output_path = params.get("outputPath")
-            
+
             if not schematic_path:
                 return {"success": False, "message": "Schematic path is required"}
             if not output_path:
                 return {"success": False, "message": "Output path is required"}
-            
+
             import subprocess
             result = subprocess.run(
                 ["kicad-cli", "sch", "export", "pdf", "--output", output_path, schematic_path],
-                capture_output=True, 
+                capture_output=True,
                 text=True
             )
-            
+
             success = result.returncode == 0
             message = result.stderr if not success else ""
-            
+
             return {"success": success, "message": message}
         except Exception as e:
             logger.error(f"Error exporting schematic to PDF: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_add_symbol(self, params):
+        """Add symbol at exact coordinates (Method 1)"""
+        logger.info("Adding symbol with exact coordinates")
+        try:
+            file_path = params.get("file_path")
+            lib_id = params.get("lib_id")
+            reference = params.get("reference")
+            value = params.get("value")
+            x = params.get("x")
+            y = params.get("y")
+            rotation = params.get("rotation", 0)
+            footprint = params.get("footprint", "")
+            datasheet = params.get("datasheet", "")
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not lib_id:
+                return {"success": False, "message": "lib_id is required"}
+            if not reference:
+                return {"success": False, "message": "reference is required"}
+            if not value:
+                return {"success": False, "message": "value is required"}
+            if x is None:
+                return {"success": False, "message": "x coordinate is required"}
+            if y is None:
+                return {"success": False, "message": "y coordinate is required"}
+
+            # Load schematic
+            from commands.schematic import SchematicManager
+            from commands.component_schematic import ComponentManager
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            # Add component
+            success = ComponentManager.add_component_sexpr(
+                schematic, lib_id, reference, value, x, y, rotation, footprint, datasheet
+            )
+
+            if success:
+                # Save schematic
+                save_path = output_path if output_path else file_path
+                save_success = SchematicManager.save_schematic(schematic, save_path)
+
+                if save_success:
+                    return {
+                        "success": True,
+                        "message": f"Added {reference} ({lib_id}) at ({x}, {y})",
+                        "file_path": save_path,
+                        "reference": reference,
+                        "position": {"x": x, "y": y, "rotation": rotation}
+                    }
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
+            else:
+                return {"success": False, "message": f"Failed to add component {reference}"}
+        except Exception as e:
+            logger.error(f"Error adding symbol: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
+    def _handle_add_symbol_auto(self, params):
+        """Add symbol with automatic grid positioning (Method 2)"""
+        logger.info("Adding symbol with auto grid positioning")
+        try:
+            file_path = params.get("file_path")
+            lib_id = params.get("lib_id")
+            reference = params.get("reference")
+            value = params.get("value")
+            grid_x = params.get("grid_x", 0)
+            grid_y = params.get("grid_y", 0)
+            grid_size = params.get("grid_size", 50.8)
+            rotation = params.get("rotation", 0)
+            footprint = params.get("footprint", "")
+            datasheet = params.get("datasheet", "")
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not lib_id:
+                return {"success": False, "message": "lib_id is required"}
+            if not reference:
+                return {"success": False, "message": "reference is required"}
+            if not value:
+                return {"success": False, "message": "value is required"}
+
+            # Load schematic
+            from commands.schematic import SchematicManager
+            from commands.component_schematic import ComponentManager
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            # Add component with auto positioning
+            success = ComponentManager.add_component_auto(
+                schematic, lib_id, reference, value, grid_x, grid_y, grid_size, rotation, footprint, datasheet
+            )
+
+            if success:
+                # Get actual position
+                added_symbol = ComponentManager.get_component(schematic, reference)
+                actual_x = added_symbol.at[0] if added_symbol else 0
+                actual_y = added_symbol.at[1] if added_symbol else 0
+
+                # Save schematic
+                save_path = output_path if output_path else file_path
+                save_success = SchematicManager.save_schematic(schematic, save_path)
+
+                if save_success:
+                    return {
+                        "success": True,
+                        "message": f"Added {reference} ({lib_id}) with auto positioning",
+                        "file_path": save_path,
+                        "reference": reference,
+                        "position": {"x": actual_x, "y": actual_y, "rotation": rotation}
+                    }
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
+            else:
+                return {"success": False, "message": f"Failed to add component {reference}"}
+        except Exception as e:
+            logger.error(f"Error adding symbol with auto positioning: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
+    def _handle_add_symbol_relative(self, params):
+        """Add symbol relative to another component (Method 3)"""
+        logger.info("Adding symbol with relative positioning")
+        try:
+            file_path = params.get("file_path")
+            lib_id = params.get("lib_id")
+            reference = params.get("reference")
+            value = params.get("value")
+            anchor_ref = params.get("anchor_ref")
+            direction = params.get("direction", "right")
+            distance = params.get("distance", 25.4)
+            rotation = params.get("rotation", 0)
+            footprint = params.get("footprint", "")
+            datasheet = params.get("datasheet", "")
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not lib_id:
+                return {"success": False, "message": "lib_id is required"}
+            if not reference:
+                return {"success": False, "message": "reference is required"}
+            if not value:
+                return {"success": False, "message": "value is required"}
+            if not anchor_ref:
+                return {"success": False, "message": "anchor_ref is required"}
+
+            # Load schematic
+            from commands.schematic import SchematicManager
+            from commands.component_schematic import ComponentManager
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            # Add component with relative positioning
+            success = ComponentManager.add_component_relative(
+                schematic, lib_id, reference, value, anchor_ref, direction, distance, rotation, footprint, datasheet
+            )
+
+            if success:
+                # Get actual position
+                added_symbol = ComponentManager.get_component(schematic, reference)
+                actual_x = added_symbol.at[0] if added_symbol else 0
+                actual_y = added_symbol.at[1] if added_symbol else 0
+
+                # Save schematic
+                save_path = output_path if output_path else file_path
+                save_success = SchematicManager.save_schematic(schematic, save_path)
+
+                if save_success:
+                    return {
+                        "success": True,
+                        "message": f"Added {reference} ({lib_id}) {direction} of {anchor_ref}",
+                        "file_path": save_path,
+                        "reference": reference,
+                        "position": {"x": actual_x, "y": actual_y, "rotation": rotation},
+                        "relative_to": anchor_ref,
+                        "direction": direction
+                    }
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
+            else:
+                return {"success": False, "message": f"Failed to add component {reference}"}
+        except Exception as e:
+            logger.error(f"Error adding symbol with relative positioning: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
+    def _handle_add_symbol_group(self, params):
+        """Add multiple symbols in a group layout (Method 4)"""
+        logger.info("Adding symbol group")
+        try:
+            file_path = params.get("file_path")
+            components = params.get("components")
+            start_x = params.get("start_x", 100)
+            start_y = params.get("start_y", 100)
+            spacing = params.get("spacing", 25.4)
+            columns = params.get("columns", 5)
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not components or not isinstance(components, list):
+                return {"success": False, "message": "components array is required"}
+
+            # Load schematic
+            from commands.schematic import SchematicManager
+            from commands.component_schematic import ComponentManager
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            # Add component group
+            success = ComponentManager.add_component_group(
+                schematic, components, start_x, start_y, spacing, columns
+            )
+
+            if success:
+                # Save schematic
+                save_path = output_path if output_path else file_path
+                save_success = SchematicManager.save_schematic(schematic, save_path)
+
+                if save_success:
+                    return {
+                        "success": True,
+                        "message": f"Added {len(components)} components in group",
+                        "file_path": save_path,
+                        "count": len(components),
+                        "components": [c.get('reference') for c in components]
+                    }
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
+            else:
+                return {"success": False, "message": "Failed to add component group"}
+        except Exception as e:
+            logger.error(f"Error adding symbol group: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "message": str(e)}
 
     def _handle_check_kicad_ui(self, params):
