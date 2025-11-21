@@ -54,8 +54,9 @@ function findPythonExecutable(scriptPath: string): string {
   }
 
   // Fall back to system Python or environment-specified Python
-  if (isWindows && process.env.KICAD_PYTHON) {
-    // Allow override via KICAD_PYTHON environment variable
+  if (process.env.KICAD_PYTHON) {
+    // Allow override via KICAD_PYTHON environment variable (Windows and macOS)
+    logger.info(`Using KICAD_PYTHON environment variable: ${process.env.KICAD_PYTHON}`);
     return process.env.KICAD_PYTHON;
   } else if (isWindows && process.env.PYTHONPATH?.includes('KiCad')) {
     // Windows: Try KiCAD's bundled Python

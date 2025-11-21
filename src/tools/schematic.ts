@@ -73,4 +73,81 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
       };
     }
   );
+
+  // Load schematic
+  server.tool(
+    "load_schematic",
+    "Load an existing schematic file",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+    },
+    async (args: { file_path: string }) => {
+      const result = await callKicadScript("load_schematic", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Get all symbols
+  server.tool(
+    "get_all_symbols",
+    "Get all symbols (components) from a schematic",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+    },
+    async (args: { file_path: string }) => {
+      const result = await callKicadScript("get_all_symbols", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Get symbol properties
+  server.tool(
+    "get_symbol_properties",
+    "Get properties of a specific symbol by reference",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      reference: z.string().describe("Component reference (e.g., R1, U1)"),
+    },
+    async (args: { file_path: string; reference: string }) => {
+      const result = await callKicadScript("get_symbol_properties", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Update symbol property
+  server.tool(
+    "update_symbol_property",
+    "Update a property of a specific symbol",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      reference: z.string().describe("Component reference (e.g., R1, U1)"),
+      property: z.string().describe("Property name (e.g., Value, Footprint)"),
+      value: z.string().describe("New property value"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; reference: string; property: string; value: string; output_path?: string }) => {
+      const result = await callKicadScript("update_symbol_property", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
 }

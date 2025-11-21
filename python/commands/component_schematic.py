@@ -69,17 +69,26 @@ class ComponentManager:
         try:
             symbol_to_update = None
             for symbol in schematic.symbol:
-                if symbol.reference == component_ref:
-                    symbol_to_update = symbol
-                    break
+                try:
+                    ref = symbol.property.Reference.value if hasattr(symbol.property, 'Reference') else None
+                    if ref == component_ref:
+                        symbol_to_update = symbol
+                        break
+                except:
+                    continue
 
             if symbol_to_update:
                 for key, value in new_properties.items():
-                    if key in symbol_to_update.property:
-                        symbol_to_update.property[key].value = value
-                    else:
-                         # Add as a new property if it doesn't exist
-                         symbol_to_update.property.append(key, value)
+                    try:
+                        # Access property using attribute notation
+                        if hasattr(symbol_to_update.property, key):
+                            prop = getattr(symbol_to_update.property, key)
+                            prop.value = value
+                        else:
+                            # Property doesn't exist - skip for now
+                            print(f"Warning: Property {key} not found on {component_ref}")
+                    except Exception as e:
+                        print(f"Error updating property {key}: {e}")
                 print(f"Updated properties for component {component_ref}.")
                 return True
             else:
@@ -93,9 +102,13 @@ class ComponentManager:
     def get_component(schematic: Schematic, component_ref: str):
         """Get a component by reference designator"""
         for symbol in schematic.symbol:
-            if symbol.reference == component_ref:
-                print(f"Found component with reference {component_ref}.")
-                return symbol
+            try:
+                ref = symbol.property.Reference.value if hasattr(symbol.property, 'Reference') else None
+                if ref == component_ref:
+                    print(f"Found component with reference {component_ref}.")
+                    return symbol
+            except:
+                continue
         print(f"Component with reference {component_ref} not found.")
         return None
 

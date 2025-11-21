@@ -270,6 +270,9 @@ class KiCADInterface:
             # Schematic commands
             "create_schematic": self._handle_create_schematic,
             "load_schematic": self._handle_load_schematic,
+            "get_all_symbols": self._handle_get_all_symbols,
+            "get_symbol_properties": self._handle_get_symbol_properties,
+            "update_symbol_property": self._handle_update_symbol_property,
             "add_schematic_component": self._handle_add_schematic_component,
             "add_schematic_wire": self._handle_add_schematic_wire,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
@@ -358,23 +361,163 @@ class KiCADInterface:
         """Load an existing schematic"""
         logger.info("Loading schematic")
         try:
-            filename = params.get("filename")
-            
-            if not filename:
-                return {"success": False, "message": "Filename is required"}
-            
-            schematic = SchematicManager.load_schematic(filename)
+            file_path = params.get("file_path") or params.get("filename")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+
+            schematic = SchematicManager.load_schematic(file_path)
             success = schematic is not None
-            
+
             if success:
-                metadata = SchematicManager.get_schematic_metadata(schematic)
-                return {"success": success, "metadata": metadata}
+                metadata_raw = SchematicManager.get_schematic_metadata(schematic)
+                # Convert ParsedValue objects to strings
+                metadata = {}
+                for key, value in metadata_raw.items():
+                    metadata[key] = str(value)
+                return {"success": success, "metadata": metadata, "file_path": file_path}
             else:
                 return {"success": False, "message": "Failed to load schematic"}
         except Exception as e:
             logger.error(f"Error loading schematic: {str(e)}")
             return {"success": False, "message": str(e)}
-    
+
+    def _handle_get_all_symbols(self, params):
+        """Get all symbols from a schematic"""
+        logger.info("Getting all symbols from schematic")
+        try:
+            file_path = params.get("file_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            symbols = ComponentManager.get_all_components(schematic)
+
+            # Convert symbols to dict format
+            symbols_data = []
+            for sym in symbols:
+                try:
+                    sym_data = {
+                        "reference": sym.property.Reference.value if hasattr(sym.property, 'Reference') else "?",
+                        "value": sym.property.Value.value if hasattr(sym.property, 'Value') else "",
+                        "lib_id": sym.lib_id.value if hasattr(sym, 'lib_id') else "",
+                        "footprint": sym.property.Footprint.value if hasattr(sym.property, 'Footprint') else "",
+                        "position": {
+                            "x": sym.at[0] if hasattr(sym, 'at') and len(sym.at) > 0 else 0,
+                            "y": sym.at[1] if hasattr(sym, 'at') and len(sym.at) > 1 else 0,
+                            "rotation": sym.at[2] if hasattr(sym, 'at') and len(sym.at) > 2 else 0
+                        }
+                    }
+                    symbols_data.append(sym_data)
+                except Exception as e:
+                    logger.warning(f"Error processing symbol: {str(e)}")
+                    continue
+
+            return {
+                "success": True,
+                "count": len(symbols_data),
+                "symbols": symbols_data
+            }
+        except Exception as e:
+            logger.error(f"Error getting symbols: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_get_symbol_properties(self, params):
+        """Get properties of a specific symbol"""
+        logger.info("Getting symbol properties")
+        try:
+            file_path = params.get("file_path")
+            reference = params.get("reference")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not reference:
+                return {"success": False, "message": "reference is required"}
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            symbol = ComponentManager.get_component(schematic, reference)
+            if not symbol:
+                return {"success": False, "message": f"Symbol {reference} not found"}
+
+            # Extract all properties
+            properties = {}
+            if hasattr(symbol, 'property'):
+                prop_names = [p for p in dir(symbol.property) if not p.startswith('_')]
+                for prop_name in prop_names:
+                    try:
+                        prop = getattr(symbol.property, prop_name)
+                        if hasattr(prop, 'value'):
+                            properties[prop_name] = prop.value
+                    except:
+                        pass
+
+            return {
+                "success": True,
+                "reference": reference,
+                "properties": properties,
+                "lib_id": symbol.lib_id.value if hasattr(symbol, 'lib_id') else "",
+                "position": {
+                    "x": symbol.at[0] if hasattr(symbol, 'at') and len(symbol.at) > 0 else 0,
+                    "y": symbol.at[1] if hasattr(symbol, 'at') and len(symbol.at) > 1 else 0,
+                    "rotation": symbol.at[2] if hasattr(symbol, 'at') and len(symbol.at) > 2 else 0
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting symbol properties: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_update_symbol_property(self, params):
+        """Update a property of a specific symbol"""
+        logger.info("Updating symbol property")
+        try:
+            file_path = params.get("file_path")
+            reference = params.get("reference")
+            property_name = params.get("property")
+            value = params.get("value")
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not reference:
+                return {"success": False, "message": "reference is required"}
+            if not property_name:
+                return {"success": False, "message": "property name is required"}
+            if value is None:
+                return {"success": False, "message": "value is required"}
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            # Update the property
+            success = ComponentManager.update_component(schematic, reference, {property_name: value})
+
+            if success:
+                # Save the schematic
+                save_path = output_path if output_path else file_path
+                save_success = SchematicManager.save_schematic(schematic, save_path)
+
+                if save_success:
+                    return {
+                        "success": True,
+                        "message": f"Updated {property_name} of {reference} to {value}",
+                        "file_path": save_path
+                    }
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
+            else:
+                return {"success": False, "message": f"Failed to update {reference}"}
+        except Exception as e:
+            logger.error(f"Error updating symbol property: {str(e)}")
+            return {"success": False, "message": str(e)}
+
     def _handle_add_schematic_component(self, params):
         """Add a component to a schematic"""
         logger.info("Adding component to schematic")
