@@ -154,7 +154,7 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
   // Add symbol with exact coordinates (Method 1)
   server.tool(
     "add_symbol",
-    "Add a symbol/component at exact coordinates using S-expression",
+    "Add a symbol/component at exact coordinates using S-expression. Supports auto-rotation based on symbol definition.",
     {
       file_path: z.string().describe("Path to the .kicad_sch file"),
       lib_id: z.string().describe("Library ID in format Library:Component (e.g., Device:R, Device:C)"),
@@ -162,12 +162,14 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
       value: z.string().describe("Component value (e.g., 10k, 100nF)"),
       x: z.number().describe("X coordinate in mm"),
       y: z.number().describe("Y coordinate in mm"),
-      rotation: z.number().optional().describe("Rotation angle in degrees (default: 0)"),
+      rotation: z.number().optional().describe("Rotation angle in degrees (default: 0). Ignored if auto_rotate or desired_orientation is set."),
       footprint: z.string().optional().describe("Footprint library ID (e.g., Resistor_SMD:R_0603_1608Metric)"),
       datasheet: z.string().optional().describe("Datasheet URL or path"),
       output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+      auto_rotate: z.boolean().optional().describe("If true, automatically determine rotation from symbol definition (default: false)"),
+      desired_orientation: z.enum(["vertical", "horizontal"]).optional().describe("Desired orientation: 'vertical' or 'horizontal'. Overrides auto_rotate and rotation."),
     },
-    async (args: { file_path: string; lib_id: string; reference: string; value: string; x: number; y: number; rotation?: number; footprint?: string; datasheet?: string; output_path?: string }) => {
+    async (args: { file_path: string; lib_id: string; reference: string; value: string; x: number; y: number; rotation?: number; footprint?: string; datasheet?: string; output_path?: string; auto_rotate?: boolean; desired_orientation?: string }) => {
       const result = await callKicadScript("add_symbol", args);
       return {
         content: [{
@@ -257,6 +259,132 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
     },
     async (args: { file_path: string; components: Array<{lib_id: string; reference: string; value: string; footprint?: string; datasheet?: string}>; start_x?: number; start_y?: number; spacing?: number; columns?: number; output_path?: string }) => {
       const result = await callKicadScript("add_symbol_group", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Delete symbol from schematic
+  server.tool(
+    "delete_symbol",
+    "Delete a symbol/component from the schematic by reference designator",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      reference: z.string().describe("Component reference to delete (e.g., R1, C1, U1)"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; reference: string; output_path?: string }) => {
+      const result = await callKicadScript("delete_symbol", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Delete multiple symbols from schematic
+  server.tool(
+    "delete_symbols",
+    "Delete multiple symbols/components from the schematic by reference designators",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      references: z.array(z.string()).describe("Array of component references to delete (e.g., ['R1', 'C1', 'U1'])"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; references: string[]; output_path?: string }) => {
+      const result = await callKicadScript("delete_symbols", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Delete all wires from schematic
+  server.tool(
+    "delete_all_wires",
+    "Delete all wire connections from the schematic",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; output_path?: string }) => {
+      const result = await callKicadScript("delete_all_wires", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Add wire connection
+  server.tool(
+    "add_wire",
+    "Add a wire connection between two points in the schematic",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      start_x: z.number().describe("Start point X coordinate in mm"),
+      start_y: z.number().describe("Start point Y coordinate in mm"),
+      end_x: z.number().describe("End point X coordinate in mm"),
+      end_y: z.number().describe("End point Y coordinate in mm"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; start_x: number; start_y: number; end_x: number; end_y: number; output_path?: string }) => {
+      const result = await callKicadScript("add_wire", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Add label
+  server.tool(
+    "add_label",
+    "Add a text label to the schematic (for net names, signal names, etc.)",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      text: z.string().describe("Label text (e.g., 'VCC', 'GND', 'VOUT')"),
+      x: z.number().describe("X coordinate in mm"),
+      y: z.number().describe("Y coordinate in mm"),
+      label_type: z.string().optional().describe("Label type: 'label', 'global_label', or 'hierarchical_label' (default: 'label')"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; text: string; x: number; y: number; label_type?: string; output_path?: string }) => {
+      const result = await callKicadScript("add_label", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  // Create complete circuit (high-level function)
+  server.tool(
+    "create_circuit",
+    "Create a complete circuit with components, power symbols, wiring, and labels - a high-level abstraction for circuit creation",
+    {
+      file_path: z.string().describe("Path to the .kicad_sch file"),
+      circuit_type: z.string().describe("Type of circuit to create (e.g., 'voltage_divider', 'rc_filter', 'led_circuit')"),
+      parameters: z.record(z.any()).describe("Circuit-specific parameters (e.g., for voltage_divider: {input_voltage: 5, output_voltage: 3, position_x: 120, position_y: 80})"),
+      output_path: z.string().optional().describe("Optional output path (defaults to overwriting input)"),
+    },
+    async (args: { file_path: string; circuit_type: string; parameters: Record<string, any>; output_path?: string }) => {
+      const result = await callKicadScript("create_circuit", args);
       return {
         content: [{
           type: "text",

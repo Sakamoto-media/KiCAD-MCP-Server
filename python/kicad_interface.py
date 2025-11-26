@@ -286,6 +286,18 @@ class KiCADInterface:
             "add_symbol_relative": self._handle_add_symbol_relative,
             "add_symbol_group": self._handle_add_symbol_group,
 
+            # Symbol deletion commands
+            "delete_symbol": self._handle_delete_symbol,
+            "delete_symbols": self._handle_delete_symbols,
+            "delete_all_wires": self._handle_delete_all_wires,
+
+            # Wire and label commands
+            "add_wire": self._handle_add_wire,
+            "add_label": self._handle_add_label,
+
+            # High-level circuit creation
+            "create_circuit": self._handle_create_circuit,
+
             # UI/Process management commands
             "check_kicad_ui": self._handle_check_kicad_ui,
             "launch_kicad_ui": self._handle_launch_kicad_ui
@@ -685,6 +697,8 @@ class KiCADInterface:
             footprint = params.get("footprint", "")
             datasheet = params.get("datasheet", "")
             output_path = params.get("output_path")
+            auto_rotate = params.get("auto_rotate", False)
+            desired_orientation = params.get("desired_orientation")
 
             if not file_path:
                 return {"success": False, "message": "file_path is required"}
@@ -707,9 +721,10 @@ class KiCADInterface:
             if not schematic:
                 return {"success": False, "message": "Failed to load schematic"}
 
-            # Add component
+            # Add component with auto-rotation support
             success = ComponentManager.add_component_sexpr(
-                schematic, lib_id, reference, value, x, y, rotation, footprint, datasheet
+                schematic, lib_id, reference, value, x, y, rotation, footprint, datasheet,
+                auto_rotate=auto_rotate, desired_orientation=desired_orientation
             )
 
             if success:
@@ -718,12 +733,16 @@ class KiCADInterface:
                 save_success = ComponentManager.save_schematic_with_tree(schematic, save_path)
 
                 if save_success:
+                    # Get final rotation from schematic
+                    final_rotation = rotation  # Will be updated by auto_rotate logic
                     return {
                         "success": True,
                         "message": f"Added {reference} ({lib_id}) at ({x}, {y})",
                         "file_path": save_path,
                         "reference": reference,
-                        "position": {"x": x, "y": y, "rotation": rotation}
+                        "position": {"x": x, "y": y, "rotation": final_rotation},
+                        "auto_rotate": auto_rotate,
+                        "desired_orientation": desired_orientation
                     }
                 else:
                     return {"success": False, "message": "Failed to save schematic"}
@@ -920,6 +939,526 @@ class KiCADInterface:
                 return {"success": False, "message": "Failed to add component group"}
         except Exception as e:
             logger.error(f"Error adding symbol group: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
+    def _handle_delete_symbol(self, params):
+        """Delete a single symbol from schematic"""
+        logger.info("Deleting symbol from schematic")
+        try:
+            file_path = params.get("file_path")
+            reference = params.get("reference")
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not reference:
+                return {"success": False, "message": "reference is required"}
+
+            # Load schematic file content
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            lines = content.split('\n')
+            output_lines = []
+
+            in_lib_symbols = False
+            in_instance_symbol = False
+            skip_current_block = False
+            symbol_start_line = 0
+
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                stripped = line.strip()
+
+                # Detect lib_symbols block
+                # New format: "lib_symbols" on its own line, old format: "(lib_symbols ..."
+                if stripped.startswith('(lib_symbols') or stripped == 'lib_symbols':
+                    in_lib_symbols = True
+                    output_lines.append(line)
+                    i += 1
+                    continue
+
+                # End of lib_symbols block (one closing paren at same indent level)
+                if in_lib_symbols and stripped == ')':
+                    in_lib_symbols = False
+                    output_lines.append(line)
+                    i += 1
+                    continue
+
+                # Keep all lib_symbols content
+                if in_lib_symbols:
+                    output_lines.append(line)
+                    i += 1
+                    continue
+
+                # Detect instance symbol (outside lib_symbols)
+                # KiCAD 9.0 format: "(" on one line, then "symbol" on next line
+                # Old format: "(symbol ..." on single line
+                if not in_lib_symbols and stripped == '(':
+                    # Check if next line is 'symbol'
+                    if i + 1 < len(lines) and lines[i + 1].strip() == 'symbol':
+                        temp_lines = []
+                        temp_i = i
+                        paren_count = 0
+                        symbol_reference = None
+                        found_property = False
+                        found_reference_key = False
+
+                        # Read entire symbol block
+                        while temp_i < len(lines):
+                            temp_line = lines[temp_i]
+                            temp_lines.append(temp_line)
+                            temp_stripped = temp_line.strip()
+                            paren_count += temp_line.count('(') - temp_line.count(')')
+
+                            # Find reference - handle both old and new formats
+                            # Old format: property "Reference" "R4" on single line
+                            # New format: property on line 1, "Reference" on line 2, "R4" on line 3
+                            if 'property "Reference"' in temp_line and symbol_reference is None:
+                                parts = temp_line.split('"')
+                                if len(parts) >= 4:
+                                    symbol_reference = parts[3]
+                            elif temp_stripped == 'property':
+                                found_property = True
+                            elif found_property and temp_stripped == '"Reference"':
+                                found_reference_key = True
+                            elif found_reference_key and temp_stripped.startswith('"') and temp_stripped.endswith('"'):
+                                # Extract reference value from quoted string
+                                symbol_reference = temp_stripped.strip('"')
+                                found_property = False
+                                found_reference_key = False
+
+                            if paren_count == 0:
+                                break
+                            temp_i += 1
+
+                        # Check if this is the symbol to delete
+                        if symbol_reference == reference:
+                            # Skip this symbol
+                            i = temp_i + 1
+                            continue
+                        else:
+                            # Keep this symbol
+                            output_lines.extend(temp_lines)
+                            i = temp_i + 1
+                            continue
+                elif not in_lib_symbols and stripped.startswith('(symbol'):
+                    # Old format: "(symbol ..." on single line
+                    temp_lines = []
+                    temp_i = i
+                    paren_count = 0
+                    symbol_reference = None
+
+                    # Read entire symbol block
+                    while temp_i < len(lines):
+                        temp_line = lines[temp_i]
+                        temp_lines.append(temp_line)
+                        paren_count += temp_line.count('(') - temp_line.count(')')
+
+                        # Find reference
+                        if 'property "Reference"' in temp_line and symbol_reference is None:
+                            parts = temp_line.split('"')
+                            if len(parts) >= 4:
+                                symbol_reference = parts[3]
+
+                        if paren_count == 0:
+                            break
+                        temp_i += 1
+
+                    # Check if this is the symbol to delete
+                    if symbol_reference == reference:
+                        # Skip this symbol
+                        i = temp_i + 1
+                        continue
+                    else:
+                        # Keep this symbol
+                        output_lines.extend(temp_lines)
+                        i = temp_i + 1
+                        continue
+
+                # Keep all other lines
+                output_lines.append(line)
+                i += 1
+
+            # Write output
+            save_path = output_path if output_path else file_path
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(output_lines))
+
+            return {
+                "success": True,
+                "message": f"Deleted symbol {reference}",
+                "file_path": save_path,
+                "reference": reference
+            }
+        except Exception as e:
+            logger.error(f"Error deleting symbol: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
+    def _handle_delete_symbols(self, params):
+        """Delete multiple symbols from schematic"""
+        logger.info("Deleting multiple symbols from schematic")
+        try:
+            file_path = params.get("file_path")
+            references = params.get("references")
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not references or not isinstance(references, list):
+                return {"success": False, "message": "references array is required"}
+
+            # Load schematic file content
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            lines = content.split('\n')
+            output_lines = []
+
+            in_lib_symbols = False
+            deleted_count = 0
+
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                stripped = line.strip()
+
+                # Detect lib_symbols block
+                # New format: "lib_symbols" on its own line, old format: "(lib_symbols ..."
+                if stripped.startswith('(lib_symbols') or stripped == 'lib_symbols':
+                    in_lib_symbols = True
+                    output_lines.append(line)
+                    i += 1
+                    continue
+
+                # End of lib_symbols block (one closing paren at same indent level)
+                if in_lib_symbols and stripped == ')':
+                    in_lib_symbols = False
+                    output_lines.append(line)
+                    i += 1
+                    continue
+
+                # Keep all lib_symbols content
+                if in_lib_symbols:
+                    output_lines.append(line)
+                    i += 1
+                    continue
+
+                # Detect instance symbol (outside lib_symbols)
+                # KiCAD 9.0 format: "(" on one line, then "symbol" on next line
+                # Old format: "(symbol ..." on single line
+                if not in_lib_symbols and stripped == '(':
+                    # Check if next line is 'symbol'
+                    if i + 1 < len(lines) and lines[i + 1].strip() == 'symbol':
+                        temp_lines = []
+                        temp_i = i
+                        paren_count = 0
+                        symbol_reference = None
+                        found_property = False
+                        found_reference_key = False
+
+                        # Read entire symbol block
+                        while temp_i < len(lines):
+                            temp_line = lines[temp_i]
+                            temp_lines.append(temp_line)
+                            temp_stripped = temp_line.strip()
+                            paren_count += temp_line.count('(') - temp_line.count(')')
+
+                            # Find reference - handle both old and new formats
+                            # Old format: property "Reference" "R4" on single line
+                            # New format: property on line 1, "Reference" on line 2, "R4" on line 3
+                            if 'property "Reference"' in temp_line and symbol_reference is None:
+                                parts = temp_line.split('"')
+                                if len(parts) >= 4:
+                                    symbol_reference = parts[3]
+                            elif temp_stripped == 'property':
+                                found_property = True
+                            elif found_property and temp_stripped == '"Reference"':
+                                found_reference_key = True
+                            elif found_reference_key and temp_stripped.startswith('"') and temp_stripped.endswith('"'):
+                                # Extract reference value from quoted string
+                                symbol_reference = temp_stripped.strip('"')
+                                found_property = False
+                                found_reference_key = False
+
+                            if paren_count == 0:
+                                break
+                            temp_i += 1
+
+                        # Check if this symbol should be deleted
+                        if symbol_reference in references:
+                            # Skip this symbol
+                            deleted_count += 1
+                            i = temp_i + 1
+                            continue
+                        else:
+                            # Keep this symbol
+                            output_lines.extend(temp_lines)
+                            i = temp_i + 1
+                            continue
+                elif not in_lib_symbols and stripped.startswith('(symbol'):
+                    # Old format: "(symbol ..." on single line
+                    temp_lines = []
+                    temp_i = i
+                    paren_count = 0
+                    symbol_reference = None
+
+                    # Read entire symbol block
+                    while temp_i < len(lines):
+                        temp_line = lines[temp_i]
+                        temp_lines.append(temp_line)
+                        paren_count += temp_line.count('(') - temp_line.count(')')
+
+                        # Find reference
+                        if 'property "Reference"' in temp_line and symbol_reference is None:
+                            parts = temp_line.split('"')
+                            if len(parts) >= 4:
+                                symbol_reference = parts[3]
+
+                        if paren_count == 0:
+                            break
+                        temp_i += 1
+
+                    # Check if this symbol should be deleted
+                    if symbol_reference in references:
+                        # Skip this symbol
+                        deleted_count += 1
+                        i = temp_i + 1
+                        continue
+                    else:
+                        # Keep this symbol
+                        output_lines.extend(temp_lines)
+                        i = temp_i + 1
+                        continue
+
+                # Keep all other lines
+                output_lines.append(line)
+                i += 1
+
+            # Write output
+            save_path = output_path if output_path else file_path
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(output_lines))
+
+            return {
+                "success": True,
+                "message": f"Deleted {deleted_count} symbols",
+                "file_path": save_path,
+                "deleted_count": deleted_count,
+                "references": references
+            }
+        except Exception as e:
+            logger.error(f"Error deleting symbols: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
+    def _handle_delete_all_wires(self, params):
+        """Delete all wires, junctions, and labels from schematic"""
+        logger.info("Deleting all wires from schematic")
+        try:
+            file_path = params.get("file_path")
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+
+            # Load schematic file content
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            lines = content.split('\n')
+            output_lines = []
+
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                stripped = line.strip()
+
+                # Skip wire, junction, and label blocks
+                if stripped.startswith('(wire') or stripped.startswith('(junction') or stripped.startswith('(label'):
+                    temp_i = i
+                    paren_count = 0
+                    while temp_i < len(lines):
+                        temp_line = lines[temp_i]
+                        paren_count += temp_line.count('(') - temp_line.count(')')
+                        if paren_count == 0:
+                            break
+                        temp_i += 1
+                    i = temp_i + 1
+                    continue
+
+                # Keep all other lines
+                output_lines.append(line)
+                i += 1
+
+            # Write output
+            save_path = output_path if output_path else file_path
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(output_lines))
+
+            return {
+                "success": True,
+                "message": "Deleted all wires, junctions, and labels",
+                "file_path": save_path
+            }
+        except Exception as e:
+            logger.error(f"Error deleting wires: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
+    def _handle_add_wire(self, params):
+        """Add wire connection to schematic"""
+        logger.info("Adding wire to schematic")
+        try:
+            file_path = params.get("file_path")
+            start_x = params.get("start_x")
+            start_y = params.get("start_y")
+            end_x = params.get("end_x")
+            end_y = params.get("end_y")
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if start_x is None or start_y is None:
+                return {"success": False, "message": "start_x and start_y are required"}
+            if end_x is None or end_y is None:
+                return {"success": False, "message": "end_x and end_y are required"}
+
+            from commands.schematic import SchematicManager
+            from commands.connection_schematic import ConnectionManager
+            from commands.component_schematic import ComponentManager
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            wire = ConnectionManager.add_wire(schematic, [start_x, start_y], [end_x, end_y])
+
+            if wire:
+                save_path = output_path if output_path else file_path
+                save_success = ComponentManager.save_schematic_with_tree(schematic, save_path)
+
+                if save_success:
+                    return {
+                        "success": True,
+                        "message": f"Added wire from ({start_x}, {start_y}) to ({end_x}, {end_y})",
+                        "file_path": save_path
+                    }
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
+            else:
+                return {"success": False, "message": "Failed to add wire"}
+
+        except Exception as e:
+            logger.error(f"Error adding wire: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
+    def _handle_add_label(self, params):
+        """Add label to schematic"""
+        logger.info("Adding label to schematic")
+        try:
+            file_path = params.get("file_path")
+            text = params.get("text")
+            x = params.get("x")
+            y = params.get("y")
+            label_type = params.get("label_type", "label")
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not text:
+                return {"success": False, "message": "text is required"}
+            if x is None or y is None:
+                return {"success": False, "message": "x and y coordinates are required"}
+
+            from commands.schematic import SchematicManager
+            from commands.connection_schematic import ConnectionManager
+            from commands.component_schematic import ComponentManager
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            label = ConnectionManager.add_label(schematic, text, x, y, label_type)
+
+            if label:
+                save_path = output_path if output_path else file_path
+                save_success = ComponentManager.save_schematic_with_tree(schematic, save_path)
+
+                if save_success:
+                    return {
+                        "success": True,
+                        "message": f"Added {label_type} '{text}' at ({x}, {y})",
+                        "file_path": save_path,
+                        "label_type": label_type
+                    }
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
+            else:
+                return {"success": False, "message": "Failed to add label"}
+
+        except Exception as e:
+            logger.error(f"Error adding label: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+
+    def _handle_create_circuit(self, params):
+        """Create complete circuit (high-level function)"""
+        logger.info("Creating circuit")
+        try:
+            file_path = params.get("file_path")
+            circuit_type = params.get("circuit_type")
+            parameters = params.get("parameters", {})
+            output_path = params.get("output_path")
+
+            if not file_path:
+                return {"success": False, "message": "file_path is required"}
+            if not circuit_type:
+                return {"success": False, "message": "circuit_type is required"}
+
+            from commands.schematic import SchematicManager
+            from commands.connection_schematic import ConnectionManager
+            from commands.component_schematic import ComponentManager
+
+            schematic = SchematicManager.load_schematic(file_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            # Route to specific circuit creation function
+            if circuit_type == "voltage_divider":
+                result = ConnectionManager.create_voltage_divider_circuit(schematic, parameters)
+            else:
+                return {
+                    "success": False,
+                    "message": f"Unknown circuit type: {circuit_type}",
+                    "supported_types": ["voltage_divider"]
+                }
+
+            if result.get("success"):
+                save_path = output_path if output_path else file_path
+                save_success = ComponentManager.save_schematic_with_tree(schematic, save_path)
+
+                if save_success:
+                    result["file_path"] = save_path
+                    result["message"] = f"Created {circuit_type} circuit successfully"
+                    return result
+                else:
+                    return {"success": False, "message": "Failed to save schematic"}
+            else:
+                return result
+
+        except Exception as e:
+            logger.error(f"Error creating circuit: {str(e)}")
             import traceback
             traceback.print_exc()
             return {"success": False, "message": str(e)}

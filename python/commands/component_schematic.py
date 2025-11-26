@@ -177,11 +177,18 @@ class ComponentManager:
         return property_expr
 
     @staticmethod
-    def _get_library_symbol_pins(schematic: Schematic, lib_id: str):
-        """Get pin information from library symbol definition"""
+    def _get_library_symbol_info(schematic: Schematic, lib_id: str):
+        """Get symbol information including pins and orientation from library symbol definition
+
+        Returns:
+            dict with keys:
+                - pins: list of pin numbers
+                - pin_positions: dict mapping pin number to (x, y, angle)
+                - default_rotation: recommended rotation (0 or 90) based on pin layout
+                - orientation_hint: "vertical" or "horizontal"
+        """
         try:
             # Try to find the library symbol definition in the schematic tree
-            # KiCAD schematics include library symbol definitions
             if hasattr(schematic, 'tree') and isinstance(schematic.tree, list):
                 for item in schematic.tree:
                     if isinstance(item, list) and len(item) > 0:
@@ -191,35 +198,93 @@ class ComponentManager:
                                 if isinstance(lib_symbol, list) and len(lib_symbol) > 1:
                                     if hasattr(lib_symbol[0], 'value') and lib_symbol[0].value() == 'symbol':
                                         # Check if this is the symbol we're looking for
-                                        for prop in lib_symbol[1:]:
-                                            if isinstance(prop, str) and prop == lib_id:
-                                                # Found the library symbol, extract pins
-                                                pins = []
-                                                # Recursively search for pin definitions
-                                                def extract_pins(node, depth=0):
-                                                    if depth > 10:  # Prevent infinite recursion
-                                                        return
-                                                    if isinstance(node, list):
-                                                        for subnode in node:
-                                                            if isinstance(subnode, list) and len(subnode) > 1:
-                                                                if hasattr(subnode[0], 'value') and subnode[0].value() == 'pin':
-                                                                    # Found a pin, extract number
-                                                                    for pin_prop in subnode[1:]:
-                                                                        if isinstance(pin_prop, str):
-                                                                            pins.append(pin_prop)
-                                                                            break
-                                                            extract_pins(subnode, depth + 1)
+                                        if lib_id in [str(x) for x in lib_symbol[1:] if isinstance(x, str)]:
+                                            # Found the library symbol
+                                            pins = []
+                                            pin_positions = {}
 
-                                                extract_pins(lib_symbol)
-                                                if pins:
-                                                    return pins
+                                            # Recursively search for pin definitions
+                                            def extract_pin_info(node, depth=0):
+                                                if depth > 10:
+                                                    return
+                                                if isinstance(node, list):
+                                                    for subnode in node:
+                                                        if isinstance(subnode, list) and len(subnode) > 1:
+                                                            if hasattr(subnode[0], 'value') and subnode[0].value() == 'pin':
+                                                                # Found a pin
+                                                                # Format: (pin type style (at x y angle) ...)
+                                                                pin_number = None
+                                                                pin_x, pin_y, pin_angle = 0, 0, 0
 
-            # If we couldn't find pins, return empty list
-            # The symbol might not have the library definition in the schematic yet
-            return []
+                                                                for pin_item in subnode:
+                                                                    # Find (at x y angle)
+                                                                    if isinstance(pin_item, list) and len(pin_item) >= 3:
+                                                                        if hasattr(pin_item[0], 'value') and pin_item[0].value() == 'at':
+                                                                            pin_x = float(pin_item[1]) if len(pin_item) > 1 else 0
+                                                                            pin_y = float(pin_item[2]) if len(pin_item) > 2 else 0
+                                                                            pin_angle = int(pin_item[3]) if len(pin_item) > 3 else 0
+                                                                    # Find (number "N")
+                                                                    if isinstance(pin_item, list) and len(pin_item) >= 2:
+                                                                        if hasattr(pin_item[0], 'value') and pin_item[0].value() == 'number':
+                                                                            pin_number = str(pin_item[1]).strip('"')
+
+                                                                if pin_number:
+                                                                    pins.append(pin_number)
+                                                                    pin_positions[pin_number] = (pin_x, pin_y, pin_angle)
+
+                                                        extract_pin_info(subnode, depth + 1)
+
+                                            extract_pin_info(lib_symbol)
+
+                                            # Determine orientation hint based on pin positions
+                                            orientation_hint = "unknown"
+                                            default_rotation = 0
+
+                                            if len(pin_positions) >= 2:
+                                                # Analyze pin layout
+                                                y_positions = [pos[1] for pos in pin_positions.values()]
+                                                x_positions = [pos[0] for pos in pin_positions.values()]
+
+                                                y_range = max(y_positions) - min(y_positions)
+                                                x_range = max(x_positions) - min(x_positions)
+
+                                                if y_range > x_range:
+                                                    orientation_hint = "vertical"
+                                                    default_rotation = 0
+                                                else:
+                                                    orientation_hint = "horizontal"
+                                                    default_rotation = 90
+
+                                            return {
+                                                'pins': pins,
+                                                'pin_positions': pin_positions,
+                                                'default_rotation': default_rotation,
+                                                'orientation_hint': orientation_hint
+                                            }
+
+            # If we couldn't find symbol info
+            return {
+                'pins': [],
+                'pin_positions': {},
+                'default_rotation': 0,
+                'orientation_hint': 'unknown'
+            }
         except Exception as e:
-            print(f"Warning: Could not extract pins from library symbol: {e}")
-            return []
+            print(f"Warning: Could not extract symbol info: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'pins': [],
+                'pin_positions': {},
+                'default_rotation': 0,
+                'orientation_hint': 'unknown'
+            }
+
+    @staticmethod
+    def _get_library_symbol_pins(schematic: Schematic, lib_id: str):
+        """Get pin information from library symbol definition (backward compatibility)"""
+        info = ComponentManager._get_library_symbol_info(schematic, lib_id)
+        return info['pins']
 
     @staticmethod
     def _create_pin_sexprs(pin_numbers: list):
@@ -274,9 +339,20 @@ class ComponentManager:
         ref_offset_y = -5.08  # About 0.2 inches above
         val_offset_y = -2.54  # About 0.1 inches above
 
+        # Text rotation = symbol rotation × -1
+        # But avoid 180° which appears upside down
+        text_rotation = -rotation
+        if text_rotation < 0:
+            text_rotation = text_rotation + 360
+
+        # Special case: if text_rotation is 180°, use 0° instead
+        # because 180° text is upside down
+        if text_rotation == 180:
+            text_rotation = 0
+
         properties = [
-            ComponentManager._create_property_sexpr("Reference", reference, x, y + ref_offset_y, 0, hide=False),
-            ComponentManager._create_property_sexpr("Value", value, x, y + val_offset_y, 0, hide=False),
+            ComponentManager._create_property_sexpr("Reference", reference, x, y + ref_offset_y, text_rotation, hide=False),
+            ComponentManager._create_property_sexpr("Value", value, x, y + val_offset_y, text_rotation, hide=False),
             ComponentManager._create_property_sexpr("Footprint", footprint, x, y, 0, hide=True, justify="bottom" if footprint else None),
             ComponentManager._create_property_sexpr("Datasheet", datasheet if datasheet else "~", x, y, 0, hide=True),
         ]
@@ -468,16 +544,42 @@ class ComponentManager:
     @staticmethod
     def add_component_sexpr(schematic: Schematic, lib_id: str, reference: str, value: str,
                            x: float, y: float, rotation: int = 0, footprint: str = "",
-                           datasheet: str = ""):
-        """Add a component using S-expression at exact coordinates (Method 1)"""
+                           datasheet: str = "", auto_rotate: bool = False,
+                           desired_orientation: str = None):
+        """Add a component using S-expression at exact coordinates (Method 1)
+
+        Args:
+            auto_rotate: If True, automatically determine rotation from symbol definition
+            desired_orientation: "vertical" or "horizontal" - overrides auto_rotate
+        """
         try:
             # Step 1: Ensure symbol definition is in lib_symbols
             if not ComponentManager._ensure_symbol_in_lib_symbols(schematic, lib_id):
                 print(f"Warning: Could not add {lib_id} to lib_symbols, but continuing...")
 
+            # Step 1.5: Auto-determine rotation if requested
+            final_rotation = rotation
+            if auto_rotate or desired_orientation:
+                symbol_info = ComponentManager._get_library_symbol_info(schematic, lib_id)
+
+                if desired_orientation:
+                    # User specified desired orientation
+                    if desired_orientation == "vertical" and symbol_info['orientation_hint'] == "horizontal":
+                        final_rotation = 90
+                    elif desired_orientation == "horizontal" and symbol_info['orientation_hint'] == "vertical":
+                        final_rotation = 90
+                    else:
+                        final_rotation = 0
+                    print(f"Using rotation={final_rotation}° for {desired_orientation} orientation (symbol default: {symbol_info['orientation_hint']})")
+                elif auto_rotate:
+                    # Use symbol's default orientation
+                    final_rotation = symbol_info['default_rotation']
+                    print(f"Auto-rotation: {lib_id} is {symbol_info['orientation_hint']} by default, using rotation={final_rotation}°")
+                    print(f"  Pin positions: {symbol_info['pin_positions']}")
+
             # Step 2: Create symbol instance S-expression
             symbol_expr = ComponentManager.create_symbol_sexpr(
-                schematic, lib_id, reference, value, x, y, rotation,
+                schematic, lib_id, reference, value, x, y, final_rotation,
                 footprint=footprint, datasheet=datasheet
             )
 
@@ -491,7 +593,7 @@ class ComponentManager:
                             break
 
                 schematic.tree.insert(insert_pos, symbol_expr)
-                print(f"Added component {reference} ({lib_id}) at ({x}, {y}) to tree at position {insert_pos}")
+                print(f"Added component {reference} ({lib_id}) at ({x}, {y}) rotation={final_rotation}° to tree at position {insert_pos}")
                 return True
             else:
                 print("Error: Schematic tree not accessible")

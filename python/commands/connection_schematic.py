@@ -164,6 +164,127 @@ class ConnectionManager:
         print(f"Attempted to get connections for net '{net_name}'. This requires advanced implementation.")
         return [] # Return empty list for now
 
+    @staticmethod
+    def create_voltage_divider_circuit(schematic, params):
+        """Create a complete voltage divider circuit
+
+        Args:
+            schematic: Schematic object
+            params: Dictionary with keys:
+                - input_voltage: float (e.g., 5)
+                - output_voltage: float (e.g., 3)
+                - position_x: float (center X position, e.g., 120)
+                - position_y: float (center Y position, e.g., 80)
+                - r_upper: Optional[float] (upper resistor value in kΩ, default: 10)
+                - r_lower: Optional[float] (lower resistor value in kΩ, calculated if not provided)
+
+        Returns:
+            dict: Result with success status and details
+        """
+        try:
+            from component_schematic import ComponentManager
+
+            # Extract parameters
+            v_in = params.get('input_voltage', 5)
+            v_out = params.get('output_voltage', 3)
+            pos_x = params.get('position_x', 120)
+            pos_y = params.get('position_y', 80)
+            r_upper = params.get('r_upper', 10)  # kΩ
+
+            # Calculate lower resistor value
+            # V_out = V_in * R_lower / (R_upper + R_lower)
+            # R_lower = (V_out * R_upper) / (V_in - V_out)
+            r_lower = params.get('r_lower')
+            if r_lower is None:
+                r_lower = (v_out * r_upper) / (v_in - v_out)
+
+            # Component positions
+            vcc_x, vcc_y = pos_x, pos_y - 20
+            r4_x, r4_y = pos_x, pos_y
+            r5_x, r5_y = pos_x, pos_y + 20
+            gnd_x, gnd_y = pos_x, pos_y + 40
+            output_x, output_y = pos_x + 15, pos_y + 10
+
+            results = []
+
+            # Add VCC power symbol
+            success_vcc = ComponentManager.add_component_sexpr(
+                schematic, "power:+5V", f"#PWR_VCC_{int(pos_x)}_{int(pos_y)}",
+                f"+{v_in}V", vcc_x, vcc_y, 0, "", ""
+            )
+            results.append(("VCC power symbol", success_vcc))
+
+            # Add upper resistor (R4)
+            success_r4 = ComponentManager.add_component_sexpr(
+                schematic, "Device:R", f"R_upper_{int(pos_x)}_{int(pos_y)}",
+                f"{r_upper}k", r4_x, r4_y, 90, "Resistor_SMD:R_0603_1608Metric", ""
+            )
+            results.append((f"Upper resistor ({r_upper}k)", success_r4))
+
+            # Add lower resistor (R5)
+            success_r5 = ComponentManager.add_component_sexpr(
+                schematic, "Device:R", f"R_lower_{int(pos_x)}_{int(pos_y)}",
+                f"{r_lower:.1f}k", r5_x, r5_y, 90, "Resistor_SMD:R_0603_1608Metric", ""
+            )
+            results.append((f"Lower resistor ({r_lower:.1f}k)", success_r5))
+
+            # Add GND power symbol
+            success_gnd = ComponentManager.add_component_sexpr(
+                schematic, "power:GND", f"#PWR_GND_{int(pos_x)}_{int(pos_y)}",
+                "GND", gnd_x, gnd_y, 0, "", ""
+            )
+            results.append(("GND power symbol", success_gnd))
+
+            # Add wires
+            wire1 = ConnectionManager.add_wire(schematic, [vcc_x, vcc_y], [r4_x, r4_y - 5])
+            results.append(("Wire VCC→R_upper", wire1 is not None))
+
+            wire2 = ConnectionManager.add_wire(schematic, [r4_x, r4_y + 5], [r5_x, r5_y - 5])
+            results.append(("Wire R_upper→R_lower", wire2 is not None))
+
+            wire3 = ConnectionManager.add_wire(schematic, [r5_x, r5_y + 5], [gnd_x, gnd_y])
+            results.append(("Wire R_lower→GND", wire3 is not None))
+
+            wire4 = ConnectionManager.add_wire(schematic, [r4_x, r4_y + 5], [output_x, output_y])
+            results.append(("Output tap wire", wire4 is not None))
+
+            # Add labels
+            label1 = ConnectionManager.add_label(schematic, "VCC", vcc_x + 5, vcc_y, "label")
+            results.append(("VCC label", label1 is not None))
+
+            label2 = ConnectionManager.add_label(schematic, "VOUT", output_x + 5, output_y, "label")
+            results.append(("VOUT label", label2 is not None))
+
+            label3 = ConnectionManager.add_label(schematic, "GND", gnd_x + 5, gnd_y, "label")
+            results.append(("GND label", label3 is not None))
+
+            # Check all succeeded
+            all_success = all(success for _, success in results)
+
+            return {
+                "success": all_success,
+                "circuit_type": "voltage_divider",
+                "details": {
+                    "input_voltage": v_in,
+                    "output_voltage": v_out,
+                    "calculated_output": round(v_in * r_lower / (r_upper + r_lower), 2),
+                    "r_upper": r_upper,
+                    "r_lower": round(r_lower, 1),
+                    "position": {"x": pos_x, "y": pos_y}
+                },
+                "results": [{"component": name, "success": success} for name, success in results]
+            }
+
+        except Exception as e:
+            print(f"Error creating voltage divider circuit: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e),
+                "circuit_type": "voltage_divider"
+            }
+
 if __name__ == '__main__':
     # Example Usage (for testing)
     from schematic import SchematicManager # Assuming schematic.py is in the same directory
